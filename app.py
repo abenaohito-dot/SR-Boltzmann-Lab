@@ -1,82 +1,111 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import re
+import math
 
-# --- Physical Constants ---
-HARTREE_TO_KCAL = 627.5095
-R_KCAL = 0.001987204
-TEMP_K = 298.15
+# ==========================================
+# FIXED PHYSICAL CONSTANTS
+# ==========================================
+TEMP = 298.15
+GAS_CONST = 0.001987204
+AU_TO_KCAL = 627.5095
+WAVELENGTH = "589.3 nm"
 
-st.set_page_config(page_title="SR-Boltzmann-Lab v1.0", layout="wide")
+def extract_energy(content):
+    match = re.search(r"Sum of electronic and thermal Free Energies=\s+(-?\d+\.\d+)", content)
+    if not match:
+        match = re.search(r"SCF Done:.*?=\s+(-?\d+\.\d+)", content)
+    return float(match.group(1)) if match else None
 
-st.title("🧪 SR-Boltzmann-Lab v1.0")
-st.write("Universal Boltzmann-weighted average tool for Specific Rotation.")
+def extract_sr(content):
+    match = re.search(r"\[Alpha\].*?=\s+(-?\d+\.\d+)\s+deg\.", content)
+    return float(match.group(1)) if match else None
 
-# --- Slim Physics Panel ---
-st.markdown(f"""
-<div style="background-color: #1e1e1e; padding: 10px; border-radius: 5px; border: 1px solid #333;">
-    <span style="color: #888; font-size: 0.8rem; margin-right: 20px;"><b>PHYSICS:</b></span>
-    <span style="color: #aaa; font-size: 0.8rem; margin-right: 20px;">T = {TEMP_K} K</span>
-    <span style="color: #aaa; font-size: 0.8rem; margin-right: 20px;">R = {R_KCAL}</span>
-    <span style="color: #aaa; font-size: 0.8rem;">Conv. = {HARTREE_TO_KCAL}</span>
-</div>
-""", unsafe_allow_html=True)
+def get_base_name(filename):
+    return re.sub(r"(_tddft|_sr|_opt|_freq|_smd|_wb97)?\.(log|out)$", "", filename, flags=re.IGNORECASE)
 
-st.write("")
+# --- UI Layout ---
+st.set_page_config(page_title="SR-Boltzmann-Lab v1.4", layout="wide")
+st.title("SR-Boltzmann-Lab v1.4")
+st.markdown(f"Running Analysis for **{WAVELENGTH}**")
 
-# --- Flexible File Input ---
-st.subheader("Step 1: Drop Gaussian Log Files")
-uploaded_files = st.file_uploader("Drag and drop .log/.out files", accept_multiple_files=True)
+# Sidebar for transparency
+with st.sidebar:
+    st.header("Computational Parameters")
+    st.info(f"Method: ωB97X-D / def2-TZVP / SMD\n\nTemp: {TEMP} K\n\nR: {GAS_CONST}")
 
-data_list = []
-if uploaded_files:
-    for uploaded_file in uploaded_files:
-        content = uploaded_file.read().decode("utf-8")
-        alpha_match = re.search(r"\[alpha\]\s+=\s+([-+]?\d+\.\d+)", content)
-        energy_match = re.search(r"Sum of electronic and thermal Free Energies=\s+([-+]?\d+\.\d+)", content)
-        
-        if energy_match:
-            data_list.append({
-                "File": uploaded_file.name,
-                "Energy (Ha)": float(energy_match.group(1)),
-                "Alpha": float(alpha_match.group(1)) if alpha_match else None
-            })
+# Dual File Uploaders
+col1, col2 = st.columns(2)
+with col1:
+    st.subheader("1. Energy Data")
+    energy_files = st.file_uploader("Upload logs", accept_multiple_files=True, key="eng")
+with col2:
+    st.subheader("2. SR Data")
+    sr_files = st.file_uploader(f"Upload logs", accept_multiple_files=True, key="sr")
 
-# --- Result & Button Area (Gray-out Logic) ---
-st.divider()
-res_col1, res_col2 = st.columns(2)
+# --- Real-time Data processing ---
+data_map = {}
 
-if data_list:
-    df = pd.DataFrame(data_list)
-    valid_df = df.dropna(subset=['Energy (Ha)', 'Alpha']).copy()
-    
-    if not valid_df.empty:
-        # Calculation
-        min_e = valid_df['Energy (Ha)'].min()
-        valid_df['dG (kcal/mol)'] = (valid_df['Energy (Ha)'] - min_e) * HARTREE_TO_KCAL
-        valid_df['Weight'] = np.exp(-valid_df['dG (kcal/mol)'] / (R_KCAL * TEMP_K))
-        sum_w = valid_df['Weight'].sum()
-        valid_df['Pop (%)'] = (valid_df['Weight'] / sum_w) * 100
-        valid_df['Contrib'] = valid_df['Alpha'] * (valid_df['Weight'] / sum_w)
-        
-        # Display Results
-        st.subheader(f"📊 Step 2: Results ({len(valid_df)} files)")
-        st.dataframe(valid_df[['File', 'Energy (Ha)', 'dG (kcal/mol)', 'Pop (%)', 'Alpha', 'Contrib']].style.format({
-            'Energy (Ha)': '{:.6f}', 'dG (kcal/mol)': '{:.2f}', 'Pop (%)': '{:.1f}', 'Alpha': '{:.1f}', 'Contrib': '{:.2f}'
-        }), use_container_width=True)
-        
-        total_sr = valid_df['Contrib'].sum()
-        res_col1.metric(label="Final Boltzmann Averaged [α]D", value=f"{total_sr:.2f}")
-        
-        csv = valid_df.to_csv(index=False).encode('utf-8')
-        res_col2.download_button("Download CSV for SI", csv, "SR_Results.csv", "text/csv")
+if energy_files:
+    for f in energy_files:
+        content = f.getvalue().decode("utf-8")
+        val = extract_energy(content)
+        if val:
+            base = get_base_name(f.name)
+            data_map[base] = {"energy": val, "sr": None}
+
+if sr_files:
+    for f in sr_files:
+        base = get_base_name(f.name)
+        content = f.getvalue().decode("utf-8")
+        val = extract_sr(content)
+        if val:
+            if base not in data_map:
+                data_map[base] = {"energy": None, "sr": val}
+            else:
+                data_map[base]["sr"] = val
+
+# Build status tracking
+ready_data = []
+pending_data = []
+
+for name, vals in data_map.items():
+    if vals["energy"] is not None and vals["sr"] is not None:
+        ready_data.append({"Conformer": name, "Energy (Ha)": vals["energy"], "SR Value": vals["sr"]})
     else:
-        res_col1.metric("Final Boltzmann Averaged [α]D", "---")
-        res_col2.button("Download CSV for SI (No data)", disabled=True)
-        st.warning("Logs detected, but calculation is incomplete (Alpha values missing).")
-else:
-    # Gray-out state when no files are uploaded
-    res_col1.metric("Final Boltzmann Averaged [α]D", "---")
-    res_col2.button("Download CSV for SI (Awaiting data)", disabled=True)
-    st.info("Awaiting log files to begin calculation.")
+        status = "Waiting for SR" if vals["sr"] is None else "Waiting for Energy"
+        pending_data.append({"Conformer": name, "Status": status})
+
+# --- Analysis Window ---
+st.write("---")
+res_col, status_col = st.columns([2, 1])
+
+with res_col:
+    st.subheader("📊 Current Calculation (Running Average)")
+    if ready_data:
+        df = pd.DataFrame(ready_data)
+        min_e = df["Energy (Ha)"].min()
+        df["ΔG (kcal/mol)"] = (df["Energy (Ha)"] - min_e) * AU_TO_KCAL
+        df["Factor"] = df["ΔG (kcal/mol)"].apply(lambda x: math.exp(-x / (GAS_CONST * TEMP)))
+        df["Pop (%)"] = (df["Factor"] / df["Factor"].sum()) * 100
+        df["Contribution"] = df["SR Value"] * (df["Pop (%)"] / 100)
+        
+        st.table(df[["Conformer", "ΔG (kcal/mol)", "Pop (%)", "SR Value", "Contribution"]])
+        st.metric(label=f"Interim Average [α]D", value=f"{df['Contribution'].sum():.2f} deg.")
+    else:
+        st.info("No complete pairs found yet.")
+
+with status_col:
+    st.subheader("⏳ Queue Status")
+    if pending_data:
+        st.dataframe(pd.DataFrame(pending_data), hide_index=True)
+    else:
+        st.success("All conformers synced!")
+
+# Download button (Always visible but disabled if no data)
+st.download_button(
+    label="Export Current Results (CSV)",
+    data=pd.DataFrame(ready_data).to_csv(index=False) if ready_data else "",
+    file_name="SR_In_Progress_Results.csv",
+    disabled=not ready_data
+)
