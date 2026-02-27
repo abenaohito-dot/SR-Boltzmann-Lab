@@ -1,0 +1,42 @@
+User Manual: SR-Boltzmann-Lab v1.0
+🌐 Access URL
+
+https://sr-boltzmann-lab-wtzsqhhwenflyrabzb8qmu.streamlit.app/
+📝 Overview
+
+This tool automates the calculation of Boltzmann-weighted average specific rotation [α]D​ from multiple Gaussian output files. It is designed for natural product chemistry research, specifically for assigning absolute configurations.
+⚙️ Computational Physics (Fixed Constants)
+
+To ensure reproducibility in scientific publications, the following constants are hard-coded into the engine:
+
+    Temperature (T): 298.15 K (25.0 °C)
+
+    Gas Constant (R): 0.001987204 kcal/(mol·K)
+
+    Energy Conversion: 627.5095 kcal/mol per Hartree
+
+🚀 How to Use
+1. Prepare Gaussian Logs
+
+Ensure your Gaussian calculations (typically using L914) are completed with Normal termination. The app requires both the Gibbs Free Energy and the Specific Rotation value from each log file.
+2. Drag & Drop
+
+Simply drag and drop your .log or .out files into the "Step 1: Drop Gaussian Log Files" area. You can upload any number of conformers simultaneously.
+
+    Note: If no files are uploaded, the calculation results remain grayed out.
+
+3. Review Results
+
+The app automatically parses the files and generates a data table including:
+
+    Relative Energy (ΔG): Calculated relative to the most stable conformer.
+
+    Population (%): The Boltzmann distribution of each conformer.
+
+    Contribution: The weighted specific rotation for each entry.
+
+4. Export for Supporting Information (SI)
+
+    Final [α]D​: The Boltzmann-averaged value is displayed prominently at the bottom.
+
+    Download CSV: Click the blue button to export the full table as a CSV file, ready for inclusion in your paper's Supporting Information.

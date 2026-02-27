@@ -1,0 +1,44 @@
+SR-Boltzmann-Lab v1.0 利用マニュアル
+
+アクセスURL
+https://sr-boltzmann-lab-wtzsqhhwenflyrabzb8qmu.streamlit.app/
+
+概要
+このツールは、複数のGaussian計算結果（.log または .out）から、比旋光度 [α]D​ のボルツマン加重平均を自動算出します。天然物化学における絶対立体配置の決定プロセスを効率化するために開発されました。
+
+計算の前提条件（物理定数）
+論文（Planta Medica等）での再現性を担保するため、以下の定数が固定されています：
+
+    温度 (T): 298.15 K (25.0 °C)
+
+    気体定数 (R): 0.001987204 kcal/(mol·K)
+
+    エネルギー換算: 627.5095 kcal/mol per Hartree (1 Hartreeからの換算値)
+
+使い方
+1. Gaussianファイルの準備
+計算が Normal termination で終了していることを確認してください。
+比旋光度を算出する L914 の計算が含まれている必要があります。
+
+2. ファイルのアップロード
+画面上の "Step 1: Drop Gaussian Log Files" というグレーの枠内に、対象となる全コンホマーのファイルをドラッグ＆ドロップしてください。
+
+    ファイル数に制限はありません。
+
+    ファイルを投入するまで、計算結果とダウンロードボタンは無効（グレーアウト）になっています。
+
+3. 結果の確認
+ファイルをドロップすると、自動的に以下の項目が算出・表示されます：
+
+    Energy (Ha): 自由エネルギー（Sum of electronic and thermal Free Energies）
+
+    dG (kcal/mol): 最安定コンホマーを基準とした相対エネルギー
+
+    Pop (%): ボルツマン分布に基づく存在比
+
+    Contrib: 各コンホマーが最終的な比旋光度に寄与している値
+
+4. データの保存
+    Final Boltzmann Averaged [α]D: 画面下部に大きく表示されるのが、最終的な加重平均値です。
+
+    Download CSV for SI: 青いボタンを押すと、表示されている表をCSV形式で保存できます。そのまま論文のSupporting Information（SI）作成に使用可能です。
