@@ -15,26 +15,26 @@ AU_TO_KCAL = 627.5095
 WAVELENGTH = "589.3 nm"
 
 def extract_energy(content):
-    # Search for Free Energy (Opt/Freq level)
+    # Search for Free Energy from Opt/Freq calculation
     match = re.search(r"Sum of electronic and thermal Free Energies=\s+(-?\d+\.\d+)", content)
     if not match:
         match = re.search(r"SCF Done:.*?=\s+(-?\d+\.\d+)", content)
     return float(match.group(1)) if match else None
 
 def extract_sr(content):
-    # Search for Specific Rotation (TD-DFT level)
+    # Search for Specific Rotation from TD-DFT calculation
     match = re.search(r"\[Alpha\].*?=\s+(-?\d+\.\d+)\s+deg\.", content)
     return float(match.group(1)) if match else None
 
 def get_base_name(filename):
-    # Optimized for CompXX_X-X_X format
+    # Optimized for CompXX_X-X_X format used in recent logs
     match = re.search(r"(Comp\d+_[A-Z]-[A-Z]_\d+)", filename, re.IGNORECASE)
     return match.group(1) if match else re.sub(r"\.(log|out)$", "", filename, flags=re.IGNORECASE)
 
 # --- UI Layout ---
-st.set_page_config(page_title="SR-Boltzmann-Lab v2.2", layout="wide")
-st.title("SR-Boltzmann-Lab v2.2")
-st.markdown(f"**Logical Analysis of Specific Rotation for {WAVELENGTH}**")
+st.set_page_config(page_title="SR-Boltzmann-Lab v2.3", layout="wide")
+st.title("SR-Boltzmann-Lab v2.3")
+st.markdown(f"**Advanced Conformer Analysis for {WAVELENGTH}**")
 
 # Sidebar for precise method tracking
 with st.sidebar:
@@ -90,7 +90,7 @@ st.write("---")
 is_ready = len(ready_data) > 0
 final_sr = 0.0
 csv_buffer = ""
-plot_buffer = b""
+plot_png_buffer = b""
 
 res_col, plot_col = st.columns([2, 3])
 
@@ -109,29 +109,38 @@ if is_ready:
         st.metric(f"Boltzmann Averaged [α]D ({WAVELENGTH})", f"{final_sr:.2f} deg.")
 
     with plot_col:
-        st.subheader("📈 Interactive Bubble Plot (Hover for ID)")
-        # Plotly for Interactive Visualization
-        fig = px.scatter(df, x="ΔG (kcal/mol)", y="SR Value",
-                         size="Pop (%)", color="Pop (%)",
-                         hover_name="Conformer",
-                         hover_data={"ΔG (kcal/mol)": ":.2f", "SR Value": ":.1f", "Pop (%)": ":.1f%"},
-                         color_continuous_scale="Viridis",
-                         size_max=50,
-                         template="plotly_white")
-        
-        # Reference lines
-        fig.add_hline(y=final_sr, line_dash="dash", line_color="red", 
-                      annotation_text=f"Calc. Avg ({final_sr:.1f})")
+        st.subheader("📈 Interactive Plot (Hover for ID)")
+        # 1. Plotly Chart (Interactive)
+        fig_px = px.scatter(df, x="ΔG (kcal/mol)", y="SR Value",
+                            size="Pop (%)", color="Pop (%)",
+                            hover_name="Conformer",
+                            hover_data={"ΔG (kcal/mol)": ":.2f", "SR Value": ":.1f", "Pop (%)": ":.1f%"},
+                            color_continuous_scale="Viridis",
+                            size_max=40, template="plotly_white")
+        fig_px.add_hline(y=final_sr, line_dash="dash", line_color="red")
         if exp_val != 0:
-            fig.add_hline(y=exp_val, line_dash="dot", line_color="blue", 
-                          annotation_text=f"Exp. ({exp_val:.1f})")
-            
-        fig.update_layout(xaxis_title="Relative Gibbs Free Energy (kcal/mol)",
-                          yaxis_title=f"Specific Rotation [α]D ({WAVELENGTH})")
-        
-        st.plotly_chart(fig, use_container_width=True)
+            fig_px.add_hline(y=exp_val, line_dash="dot", line_color="blue")
+        st.plotly_chart(fig_px, use_container_width=True)
 
-    # Export Preparation
+        # 2. Static Plot Generation (For PNG Download)
+        fig_static, ax = plt.subplots(figsize=(6, 5), dpi=300)
+        sc = ax.scatter(df["ΔG (kcal/mol)"], df["SR Value"], 
+                        s=df["Pop (%)"] * 20, c=df["Pop (%)"], 
+                        cmap='viridis', alpha=0.7, edgecolors="black")
+        ax.axhline(final_sr, color='red', linestyle='--', label=f'Boltzmann Avg ({final_sr:.1f})')
+        if exp_val != 0:
+            ax.axhline(exp_val, color='blue', linestyle=':', label=f'Exp. ({exp_val:.1f})')
+        ax.set_xlabel("Relative Gibbs Free Energy (kcal/mol)")
+        ax.set_ylabel(f"Specific Rotation [α]D ({WAVELENGTH})")
+        ax.grid(True, linestyle=':', alpha=0.6)
+        ax.legend(fontsize=9)
+        plt.tight_layout()
+        
+        buf = io.BytesIO()
+        fig_static.savefig(buf, format="png", dpi=300)
+        plot_png_buffer = buf.getvalue()
+
+    # CSV Buffer
     csv_df = df.copy()
     summary = pd.DataFrame([{"Conformer": "TOTAL/AVERAGE", "SR Value": final_sr}], index=[len(df)])
     csv_buffer = pd.concat([csv_df, summary]).to_csv(index=False)
@@ -143,6 +152,7 @@ st.divider()
 dl1, dl2 = st.columns(2)
 with dl1:
     st.download_button("Download SI-Data (CSV)", data=csv_buffer, 
-                       file_name=f"SR_Final_{final_sr:.1f}.csv", disabled=not is_ready)
+                       file_name=f"SR_Data_{final_sr:.1f}.csv", disabled=not is_ready)
 with dl2:
-    st.info("Note: Use the camera icon in the plot above to save as PNG for publication.")
+    st.download_button("Download Plot (High-Res PNG)", data=plot_png_buffer, 
+                       file_name="SR_Boltzmann_Plot.png", mime="image/png", disabled=not is_ready)
