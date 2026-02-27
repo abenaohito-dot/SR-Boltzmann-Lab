@@ -28,22 +28,23 @@ def get_base_name(filename):
     return match.group(1) if match else re.sub(r"\.(log|out)$", "", filename, flags=re.IGNORECASE)
 
 # --- UI Layout ---
-st.set_page_config(page_title="SR-Boltzmann-Lab v1.9", layout="wide")
-st.title("SR-Boltzmann-Lab v1.9")
+st.set_page_config(page_title="SR-Boltzmann-Lab v2.0", layout="wide")
+st.title("SR-Boltzmann-Lab v2.0")
+st.markdown(f"**Conformer Analysis & Boltzmann Distribution for {WAVELENGTH}**")
 
 # Sidebar
 with st.sidebar:
-    st.header("1. Experimental Input")
-    exp_val = st.number_input("Experimental [α]D (deg.)", value=0.0, step=0.1)
+    st.header("1. Experimental Reference")
+    exp_val = st.number_input("Experimental [α]D (deg.)", value=0.0, step=0.1, help="If provided, shown as a dashed line in the plot.")
     st.divider()
     st.header("2. Parameters")
     st.info(f"Method: ωB97X-D/def2-TZVP/SMD\n\nTemp: {TEMP} K\n\nR: {GAS_CONST}")
 
 col1, col2 = st.columns(2)
 with col1:
-    energy_files = st.file_uploader("Upload Opt/Freq logs", accept_multiple_files=True, key="eng")
+    energy_files = st.file_uploader("1. Energy Data (Opt/Freq)", accept_multiple_files=True, key="eng")
 with col2:
-    sr_files = st.file_uploader("Upload SR logs", accept_multiple_files=True, key="sr")
+    sr_files = st.file_uploader("2. SR Data (TD-DFT)", accept_multiple_files=True, key="sr")
 
 # --- Logic ---
 data_map = {}
@@ -63,17 +64,21 @@ if sr_files:
             else: data_map[base] = {"energy": None, "sr": val}
 
 ready_data = []
+pending_data = []
 for name, v in data_map.items():
     if v["energy"] is not None and v["sr"] is not None:
         ready_data.append({"Conformer": name, "Energy (Ha)": v["energy"], "SR Value": v["sr"]})
+    else:
+        status = "Waiting for SR" if v["sr"] is None else "Waiting for Energy"
+        pending_data.append({"ID": name, "Status": status})
 
-# Initialize variables for output
+# --- Outputs ---
+st.write("---")
 is_ready = len(ready_data) > 0
+final_sr = 0.0
 csv_buffer = ""
 plot_buffer = b""
-final_sr = 0.0
 
-st.write("---")
 res_col, plot_col = st.columns([1, 1])
 
 if is_ready:
@@ -86,51 +91,52 @@ if is_ready:
     final_sr = df["Contribution"].sum()
 
     with res_col:
-        st.subheader("📊 Analysis Summary")
-        st.table(df[["Conformer", "Pop (%)", "SR Value", "Contribution"]])
+        st.subheader("📊 Interim Boltzmann Results")
+        st.table(df[["Conformer", "ΔG (kcal/mol)", "Pop (%)", "SR Value"]])
         st.metric("Boltzmann Averaged [α]D", f"{final_sr:.2f} deg.")
-    
+        if pending_data:
+            st.warning(f"Incomplete pairs: {len(pending_data)}")
+            st.dataframe(pd.DataFrame(pending_data), hide_index=True)
+
     with plot_col:
-        st.subheader("🖼️ Comparison Plot")
-        fig, ax = plt.subplots(figsize=(5, 4))
-        ax.bar(['Exp.', 'Calc.'], [exp_val, final_sr], color=['#5DADE2', '#E74C3C'], edgecolor='black', width=0.6)
-        ax.axhline(0, color='black', linewidth=0.8)
-        ax.set_ylabel(f'[α]D ({WAVELENGTH})')
+        st.subheader("📈 Conformer Distribution Plot")
+        fig, ax = plt.subplots(figsize=(6, 5))
+        
+        # Bubble Plot: X=Rel Energy, Y=SR, Size=Population
+        scatter = ax.scatter(df["ΔG (kcal/mol)"], df["SR Value"], 
+                            s=df["Pop (%)"] * 20, # Scale size for visibility
+                            c=df["Pop (%)"], cmap='viridis', alpha=0.7, edgecolors="black")
+        
+        # Horizontal lines for Weighted Average and Experimental
+        ax.axhline(final_sr, color='red', linestyle='--', linewidth=1.5, label=f'Boltzmann Avg ({final_sr:.1f})')
+        if exp_val != 0:
+            ax.axhline(exp_val, color='blue', linestyle=':', linewidth=1.5, label=f'Exp. Value ({exp_val:.1f})')
+            
+        ax.set_xlabel("Relative Gibbs Free Energy (kcal/mol)", fontsize=10)
+        ax.set_ylabel(f"Specific Rotation [α]D ({WAVELENGTH})", fontsize=10)
+        ax.grid(True, linestyle=':', alpha=0.6)
+        ax.legend(fontsize=9)
+        
         plt.tight_layout()
         st.pyplot(fig)
         
-        # Prepare Plot Buffer
+        # Image Buffer
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=300)
         plot_buffer = buf.getvalue()
 
-    # Prepare CSV Buffer
+    # CSV Buffer
     csv_df = df.copy()
-    summary = pd.DataFrame([{"Conformer": "TOTAL/AVG", "SR Value": final_sr}], index=[len(df)])
+    summary = pd.DataFrame([{"Conformer": "TOTAL/AVERAGE", "SR Value": final_sr}], index=[len(df)])
     csv_buffer = pd.concat([csv_df, summary]).to_csv(index=False)
 
 else:
-    st.info("Waiting for matched Energy and SR log files...")
+    st.info("Drop matched Energy and SR log files to generate analysis.")
 
-# --- Persistent Output Buttons (Grayed out if not ready) ---
+# --- Persistent Action Buttons ---
 st.divider()
-dl_col1, dl_col2 = st.columns(2)
-
-with dl_col1:
-    st.download_button(
-        label="Download SI-Data (CSV)",
-        data=csv_buffer,
-        file_name=f"SR_Final_{final_sr:.1f}.csv",
-        disabled=not is_ready,
-        key="dl_csv"
-    )
-
-with dl_col2:
-    st.download_button(
-        label="Download Plot (PNG)",
-        data=plot_buffer,
-        file_name="SR_Comparison_Plot.png",
-        mime="image/png",
-        disabled=not is_ready,
-        key="dl_plot"
-    )
+dl1, dl2 = st.columns(2)
+with dl1:
+    st.download_button("Download SI-Data (CSV)", data=csv_buffer, file_name=f"SR_Results_{final_sr:.1f}.csv", disabled=not is_ready)
+with dl2:
+    st.download_button("Download Analysis Plot (PNG)", data=plot_buffer, file_name="SR_Conformer_Plot.png", mime="image/png", disabled=not is_ready)
