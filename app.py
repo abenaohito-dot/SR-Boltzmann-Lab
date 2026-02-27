@@ -2,12 +2,14 @@ import streamlit as st
 import pandas as pd
 import re
 import math
+import matplotlib.pyplot as plt
+import io
 
 # ==========================================
 # FIXED PHYSICAL CONSTANTS
 # ==========================================
-TEMP = 298.15              # 25.0 °C
-GAS_CONST = 0.001987204    # kcal/(mol·K)
+TEMP = 298.15
+GAS_CONST = 0.001987204
 AU_TO_KCAL = 627.5095
 WAVELENGTH = "589.3 nm"
 
@@ -26,32 +28,30 @@ def get_base_name(filename):
     return match.group(1) if match else re.sub(r"\.(log|out)$", "", filename, flags=re.IGNORECASE)
 
 # --- UI Layout ---
-st.set_page_config(page_title="SR-Boltzmann-Lab v1.7", layout="wide")
-st.title("SR-Boltzmann-Lab v1.7")
-st.markdown(f"Running Analysis for **{WAVELENGTH}**")
+st.set_page_config(page_title="SR-Boltzmann-Lab v1.9", layout="wide")
+st.title("SR-Boltzmann-Lab v1.9")
 
+# Sidebar
 with st.sidebar:
-    st.header("Parameters")
+    st.header("1. Experimental Input")
+    exp_val = st.number_input("Experimental [α]D (deg.)", value=0.0, step=0.1)
+    st.divider()
+    st.header("2. Parameters")
     st.info(f"Method: ωB97X-D/def2-TZVP/SMD\n\nTemp: {TEMP} K\n\nR: {GAS_CONST}")
 
-# Dual File Uploaders
 col1, col2 = st.columns(2)
 with col1:
-    st.subheader("1. Energy Data")
     energy_files = st.file_uploader("Upload Opt/Freq logs", accept_multiple_files=True, key="eng")
 with col2:
-    st.subheader("2. SR Data")
-    sr_files = st.file_uploader(f"Upload SR logs ({WAVELENGTH})", accept_multiple_files=True, key="sr")
+    sr_files = st.file_uploader("Upload SR logs", accept_multiple_files=True, key="sr")
 
-# --- Processing Logic ---
+# --- Logic ---
 data_map = {}
 if energy_files:
     for f in energy_files:
         content = f.getvalue().decode("utf-8")
         val = extract_energy(content)
-        if val:
-            base = get_base_name(f.name)
-            data_map[base] = {"energy": val, "sr": None, "eng_name": f.name, "sr_name": None}
+        if val: data_map[get_base_name(f.name)] = {"energy": val, "sr": None}
 
 if sr_files:
     for f in sr_files:
@@ -59,61 +59,78 @@ if sr_files:
         content = f.getvalue().decode("utf-8")
         val = extract_sr(content)
         if val:
-            if base not in data_map:
-                data_map[base] = {"energy": None, "sr": val, "eng_name": None, "sr_name": f.name}
-            else:
-                data_map[base]["sr"] = val
-                data_map[base]["sr_name"] = f.name
+            if base in data_map: data_map[base]["sr"] = val
+            else: data_map[base] = {"energy": None, "sr": val}
 
 ready_data = []
-pending_data = []
 for name, v in data_map.items():
     if v["energy"] is not None and v["sr"] is not None:
         ready_data.append({"Conformer": name, "Energy (Ha)": v["energy"], "SR Value": v["sr"]})
-    else:
-        status = "Waiting for SR" if v["sr"] is None else "Waiting for Energy"
-        pending_data.append({"ID": name, "Status": status})
 
-# --- Display Window ---
-st.write("---")
-res_col, status_col = st.columns([2, 1])
-
+# Initialize variables for output
 is_ready = len(ready_data) > 0
-final_sr = 0.0
 csv_buffer = ""
+plot_buffer = b""
+final_sr = 0.0
 
-with res_col:
-    st.subheader("📊 Interim Average")
-    if is_ready:
-        df = pd.DataFrame(ready_data)
-        min_e = df["Energy (Ha)"].min()
-        df["ΔG (kcal/mol)"] = (df["Energy (Ha)"] - min_e) * AU_TO_KCAL
-        df["Pop (%)"] = (df["ΔG (kcal/mol)"].apply(lambda x: math.exp(-x / (GAS_CONST * TEMP))) / 
-                         df["ΔG (kcal/mol)"].apply(lambda x: math.exp(-x / (GAS_CONST * TEMP))).sum()) * 100
-        df["Contribution"] = df["SR Value"] * (df["Pop (%)"] / 100)
-        final_sr = df["Contribution"].sum()
+st.write("---")
+res_col, plot_col = st.columns([1, 1])
+
+if is_ready:
+    df = pd.DataFrame(ready_data)
+    min_e = df["Energy (Ha)"].min()
+    df["ΔG (kcal/mol)"] = (df["Energy (Ha)"] - min_e) * AU_TO_KCAL
+    df["Pop (%)"] = (df["ΔG (kcal/mol)"].apply(lambda x: math.exp(-x / (GAS_CONST * TEMP))) / 
+                     df["ΔG (kcal/mol)"].apply(lambda x: math.exp(-x / (GAS_CONST * TEMP))).sum()) * 100
+    df["Contribution"] = df["SR Value"] * (df["Pop (%)"] / 100)
+    final_sr = df["Contribution"].sum()
+
+    with res_col:
+        st.subheader("📊 Analysis Summary")
+        st.table(df[["Conformer", "Pop (%)", "SR Value", "Contribution"]])
+        st.metric("Boltzmann Averaged [α]D", f"{final_sr:.2f} deg.")
+    
+    with plot_col:
+        st.subheader("🖼️ Comparison Plot")
+        fig, ax = plt.subplots(figsize=(5, 4))
+        ax.bar(['Exp.', 'Calc.'], [exp_val, final_sr], color=['#5DADE2', '#E74C3C'], edgecolor='black', width=0.6)
+        ax.axhline(0, color='black', linewidth=0.8)
+        ax.set_ylabel(f'[α]D ({WAVELENGTH})')
+        plt.tight_layout()
+        st.pyplot(fig)
         
-        st.table(df[["Conformer", "ΔG (kcal/mol)", "Pop (%)", "SR Value", "Contribution"]])
-        st.metric(label=f"Current Boltzmann Average [α]D", value=f"{final_sr:.2f} deg.")
-        
-        # Prepare CSV with Summary Row
-        csv_df = df.copy()
-        summary = pd.DataFrame([{"Conformer": "TOTAL / AVERAGE", "SR Value": final_sr}], index=[len(df)])
-        csv_buffer = pd.concat([csv_df, summary]).to_csv(index=False)
-    else:
-        st.info("Awaiting paired log files...")
+        # Prepare Plot Buffer
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=300)
+        plot_buffer = buf.getvalue()
 
-with status_col:
-    st.subheader("⏳ Queue Status")
-    if pending_data:
-        st.dataframe(pd.DataFrame(pending_data), hide_index=True)
-    else:
-        st.success("All conformers paired!")
+    # Prepare CSV Buffer
+    csv_df = df.copy()
+    summary = pd.DataFrame([{"Conformer": "TOTAL/AVG", "SR Value": final_sr}], index=[len(df)])
+    csv_buffer = pd.concat([csv_df, summary]).to_csv(index=False)
 
-# Final Action
-st.download_button(
-    label="Download SI-Data (CSV)",
-    data=csv_buffer,
-    file_name=f"SR_Results_{final_sr:.1f}.csv",
-    disabled=not is_ready
-)
+else:
+    st.info("Waiting for matched Energy and SR log files...")
+
+# --- Persistent Output Buttons (Grayed out if not ready) ---
+st.divider()
+dl_col1, dl_col2 = st.columns(2)
+
+with dl_col1:
+    st.download_button(
+        label="Download SI-Data (CSV)",
+        data=csv_buffer,
+        file_name=f"SR_Final_{final_sr:.1f}.csv",
+        disabled=not is_ready,
+        key="dl_csv"
+    )
+
+with dl_col2:
+    st.download_button(
+        label="Download Plot (PNG)",
+        data=plot_buffer,
+        file_name="SR_Comparison_Plot.png",
+        mime="image/png",
+        disabled=not is_ready,
+        key="dl_plot"
+    )
