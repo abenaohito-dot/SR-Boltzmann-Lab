@@ -23,28 +23,30 @@ def extract_energy(content):
 
 def extract_sr(content):
     # Search for Specific Rotation from TD-DFT calculation
-    match = re.search(r"\[Alpha\].*?=\s+(-?\d+\.\d+)\s+deg\.", content)
+    # 589.30 nm を明示的に指定して Raw Value を取得する
+    match = re.search(r"589\.30\s+nm:.*?\[Alpha\]\s+=\s+(-?\d+\.\d+)", content)
+    if not match:
+        # Fallback: [Alpha] の直後の数値を拾う
+        match = re.search(r"\[Alpha\].*?=\s+(-?\d+\.\d+)\s+deg\.", content)
     return float(match.group(1)) if match else None
 
 def get_base_id(filename):
     """
     Extracts the numerical suffix as the unique ID for pairing.
-    Example: 'Comp14_R-F_1.log' -> '1', 'Structure_opt_2.out' -> '2'
+    Example: 'Comp14_R-F_1.log' -> '1'
     """
-    # Remove extension and lowercase
     name = filename.lower().replace(".log", "").replace(".out", "")
-    # Search for digits at the very end of the string
     match = re.search(r"(\d+)$", name)
     if match:
         return match.group(1)
-    return name # Fallback to full name if no digits found
+    return name
 
 # --- UI Layout ---
 st.set_page_config(page_title="SR-Boltzmann-Lab v2.5", layout="wide")
 st.title("SR-Boltzmann-Lab v2.5")
-st.markdown(f"**Flexible Numerical Matching for {WAVELENGTH}**")
+st.markdown(f"**Advanced Chiroptical Analysis for {WAVELENGTH}**")
 
-# Sidebar for precise method tracking
+# Sidebar
 with st.sidebar:
     st.header("1. Experimental Reference")
     exp_val = st.number_input("Experimental [α]D (deg.)", value=0.0, step=0.1)
@@ -53,9 +55,7 @@ with st.sidebar:
     st.header("2. Computational Levels")
     st.info(f"""
     **Opt/Freq:** ωB97X-D/def2-SVP/SMD(MeOH)
-    
     **SR (TD-DFT):** ωB97X-D/def2-TZVP/SMD(MeOH)
-    
     **Temp:** {TEMP} K
     """)
     st.caption("Pairing logic: Matches files by the last digit in their names.")
@@ -71,7 +71,6 @@ with col2:
 
 # --- Processing Logic ---
 data_map = {}
-# Process Energy files first to establish the IDs
 if energy_files:
     for f in energy_files:
         content = f.getvalue().decode("utf-8")
@@ -79,7 +78,6 @@ if energy_files:
         if val:
             data_map[get_base_id(f.name)] = {"name": f.name, "energy": val, "sr": None}
 
-# Match SR files based on the numerical ID
 if sr_files:
     for f in sr_files:
         file_id = get_base_id(f.name)
@@ -98,7 +96,7 @@ for file_id, v in data_map.items():
             "ID": file_id, 
             "File": v["name"], 
             "Energy (Ha)": v["energy"], 
-            "SR Value": v["sr"]
+            "Raw SR": v["sr"] # 名前を明確化
         })
 
 # --- Results Rendering ---
@@ -113,42 +111,46 @@ res_col, plot_col = st.columns([2, 3])
 if is_ready:
     df = pd.DataFrame(ready_data)
     min_e = df["Energy (Ha)"].min()
-    # Calculate Boltzmann distribution
+    
+    # Calculate Boltzmann
     df["ΔG (kcal/mol)"] = (df["Energy (Ha)"] - min_e) * AU_TO_KCAL
     df["Pop (%)"] = (df["ΔG (kcal/mol)"].apply(lambda x: math.exp(-x / (GAS_CONST * TEMP))) / 
                      df["ΔG (kcal/mol)"].apply(lambda x: math.exp(-x / (GAS_CONST * TEMP))).sum()) * 100
-    df["Contribution"] = df["SR Value"] * (df["Pop (%)"] / 100)
+    
+    # Calculate Contribution (Pop * Raw SR)
+    df["Contribution"] = df["Raw SR"] * (df["Pop (%)"] / 100)
     final_sr = df["Contribution"].sum()
 
     with res_col:
         st.subheader("📊 Numerical Summary")
-        st.table(df[["ID", "ΔG (kcal/mol)", "Pop (%)", "SR Value"]])
-        st.metric(f"Boltzmann Averaged [α]D ({WAVELENGTH})", f"{final_sr:.2f} deg.")
+        # Raw SR と Contribution を並べて表示
+        st.table(df[["ID", "ΔG (kcal/mol)", "Pop (%)", "Raw SR", "Contribution"]])
+        st.metric(f"Boltzmann Averaged [α]D", f"{final_sr:.2f} deg.")
 
     with plot_col:
         st.subheader("📈 Interactive Analysis")
-        # Plotly for ID identification
-        fig_px = px.scatter(df, x="ΔG (kcal/mol)", y="SR Value",
+        # Raw SR を y軸に据え、Pop のサイズで表示
+        fig_px = px.scatter(df, x="ΔG (kcal/mol)", y="Raw SR",
                             size="Pop (%)", color="Pop (%)",
                             hover_name="ID",
-                            hover_data={"File": True, "ΔG (kcal/mol)": ":.2f", "Pop (%)": ":.1f%"},
+                            hover_data={"File": True, "Pop (%)": ":.1f%", "Contribution": ":.2f"},
                             color_continuous_scale="Viridis",
                             size_max=40, template="plotly_white")
-        fig_px.add_hline(y=final_sr, line_dash="dash", line_color="red")
+        fig_px.add_hline(y=final_sr, line_dash="dash", line_color="red", annotation_text="Calc. Avg")
         if exp_val != 0:
-            fig_px.add_hline(y=exp_val, line_dash="dot", line_color="blue")
+            fig_px.add_hline(y=exp_val, line_dash="dot", line_color="blue", annotation_text="Exp.")
         st.plotly_chart(fig_px, use_container_width=True)
 
         # Static Matplotlib Plot for PNG
         fig_static, ax = plt.subplots(figsize=(6, 5), dpi=300)
-        ax.scatter(df["ΔG (kcal/mol)"], df["SR Value"], 
+        ax.scatter(df["ΔG (kcal/mol)"], df["Raw SR"], 
                    s=df["Pop (%)"] * 20, c=df["Pop (%)"], 
                    cmap='viridis', alpha=0.7, edgecolors="black")
         ax.axhline(final_sr, color='red', linestyle='--', label=f'Calc. Avg ({final_sr:.1f})')
         if exp_val != 0:
             ax.axhline(exp_val, color='blue', linestyle=':', label=f'Exp. ({exp_val:.1f})')
         ax.set_xlabel("Relative Gibbs Free Energy (kcal/mol)")
-        ax.set_ylabel(f"Specific Rotation [α]D ({WAVELENGTH})")
+        ax.set_ylabel(f"Raw Specific Rotation [α]D ({WAVELENGTH})")
         ax.grid(True, linestyle=':', alpha=0.6)
         ax.legend(fontsize=9)
         plt.tight_layout()
@@ -157,19 +159,19 @@ if is_ready:
         fig_static.savefig(buf, format="png", dpi=300)
         plot_png_buffer = buf.getvalue()
 
-    # CSV Export
-    csv_df = df.copy()
-    summary = pd.DataFrame([{"ID": "TOTAL", "SR Value": final_sr}], index=[len(df)])
-    csv_buffer = pd.concat([csv_df, summary]).to_csv(index=False)
-else:
-    st.info("Drop Gaussian logs. Files will be paired by their trailing numbers (e.g., '_1').")
+    # CSV Export (Summary line included)
+    summary_row = pd.DataFrame([{"ID": "AVERAGED TOTAL", "Contribution": final_sr}], index=[len(df)])
+    csv_buffer = pd.concat([df, summary_row]).to_csv(index=False)
 
-# --- Persistent Output Buttons ---
+else:
+    st.info("Upload Gaussian logs. Pairing logic: Matches SVP (Energy) and TZVP (SR) files by the last digit in their names.")
+
+# --- Download Buttons ---
 st.divider()
 dl1, dl2 = st.columns(2)
 with dl1:
     st.download_button("Download SI-Data (CSV)", data=csv_buffer, 
-                       file_name=f"SR_Final_{final_sr:.1f}.csv", disabled=not is_ready)
+                       file_name=f"SR_Boltzmann_Final_{final_sr:.1f}.csv", disabled=not is_ready)
 with dl2:
     st.download_button("Download Plot (High-Res PNG)", data=plot_png_buffer, 
                        file_name="SR_Boltzmann_Plot.png", mime="image/png", disabled=not is_ready)
