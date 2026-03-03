@@ -12,7 +12,7 @@ import io
 TEMP = 298.15              # 25.0 °C
 GAS_CONST = 0.001987204    # kcal/(mol·K)
 AU_TO_KCAL = 627.5095      # Conversion factor
-WAVELENGTH = "589.3 nm"
+WAVELENGTH = "589.3 nm"    # Note: Target is D-line
 
 def extract_energy(content):
     # Search for Free Energy from Opt/Freq calculation
@@ -22,12 +22,30 @@ def extract_energy(content):
     return float(match.group(1)) if match else None
 
 def extract_sr(content):
-    # Search for Specific Rotation from TD-DFT calculation
-    # 589.30 nm を明示的に指定して Raw Value を取得する
-    match = re.search(r"589\.30\s+nm:.*?\[Alpha\]\s+=\s+(-?\d+\.\d+)", content)
-    if not match:
-        # Fallback: [Alpha] の直後の数値を拾う
-        match = re.search(r"\[Alpha\].*?=\s+(-?\d+\.\d+)\s+deg\.", content)
+    """
+    Extracts Specific Rotation from Gaussian TD-DFT logs.
+    Priority:
+    1. Optical Rotation GL (GIAO) with wavelength (e.g., 5983.0 A)
+    2. Optical Rotation GL (GIAO) static value
+    3. First available [Alpha] value (Fallback)
+    """
+    # 1. Target: Optical Rotation GL with wavelength
+    # re.DOTALL is used to match across multiple lines after the header
+    gl_section = re.search(r"Optical Rotation GL:.*?(?=\n\s*\n|Optical Rotation|$)", content, re.DOTALL)
+    if gl_section:
+        section_text = gl_section.group(0)
+        # Search for wavelength-specific [Alpha] (e.g., -152.87)
+        match = re.search(r"\[Alpha\]\s+\(\s*[\d\.]+\s+A\)\s+=\s+(-?\d+\.\d+)", section_text)
+        if match:
+            return float(match.group(1))
+        
+        # 2. Target: Optical Rotation GL static [Alpha]D
+        match = re.search(r"\[Alpha\]D\s+\(static\)\s+=\s+(-?\d+\.\d+)", section_text)
+        if match:
+            return float(match.group(1))
+
+    # 3. Fallback: Search for any [Alpha] in the file
+    match = re.search(r"\[Alpha\].*?=\s+(-?\d+\.\d+)\s+deg\.", content)
     return float(match.group(1)) if match else None
 
 def get_base_id(filename):
@@ -42,9 +60,9 @@ def get_base_id(filename):
     return name
 
 # --- UI Layout ---
-st.set_page_config(page_title="SR-Boltzmann-Lab v2.5", layout="wide")
-st.title("SR-Boltzmann-Lab v2.5")
-st.markdown(f"**Advanced Chiroptical Analysis for {WAVELENGTH}**")
+st.set_page_config(page_title="SR-Boltzmann-Lab v2.6", layout="wide")
+st.title("SR-Boltzmann-Lab v2.6")
+st.markdown(f"**GIAO (GL) Optimized Analysis for {WAVELENGTH}**")
 
 # Sidebar
 with st.sidebar:
@@ -58,7 +76,7 @@ with st.sidebar:
     **SR (TD-DFT):** ωB97X-D/def2-TZVP/SMD(MeOH)
     **Temp:** {TEMP} K
     """)
-    st.caption("Pairing logic: Matches files by the last digit in their names.")
+    st.caption("v2.6 Priority: Optical Rotation GL (GIAO) > GV")
 
 # Dual File Uploaders
 col1, col2 = st.columns(2)
@@ -96,7 +114,7 @@ for file_id, v in data_map.items():
             "ID": file_id, 
             "File": v["name"], 
             "Energy (Ha)": v["energy"], 
-            "Raw SR": v["sr"] # 名前を明確化
+            "Raw SR": v["sr"]
         })
 
 # --- Results Rendering ---
@@ -117,19 +135,17 @@ if is_ready:
     df["Pop (%)"] = (df["ΔG (kcal/mol)"].apply(lambda x: math.exp(-x / (GAS_CONST * TEMP))) / 
                      df["ΔG (kcal/mol)"].apply(lambda x: math.exp(-x / (GAS_CONST * TEMP))).sum()) * 100
     
-    # Calculate Contribution (Pop * Raw SR)
+    # Calculate Contribution
     df["Contribution"] = df["Raw SR"] * (df["Pop (%)"] / 100)
     final_sr = df["Contribution"].sum()
 
     with res_col:
         st.subheader("📊 Numerical Summary")
-        # Raw SR と Contribution を並べて表示
         st.table(df[["ID", "ΔG (kcal/mol)", "Pop (%)", "Raw SR", "Contribution"]])
         st.metric(f"Boltzmann Averaged [α]D", f"{final_sr:.2f} deg.")
 
     with plot_col:
         st.subheader("📈 Interactive Analysis")
-        # Raw SR を y軸に据え、Pop のサイズで表示
         fig_px = px.scatter(df, x="ΔG (kcal/mol)", y="Raw SR",
                             size="Pop (%)", color="Pop (%)",
                             hover_name="ID",
@@ -150,7 +166,7 @@ if is_ready:
         if exp_val != 0:
             ax.axhline(exp_val, color='blue', linestyle=':', label=f'Exp. ({exp_val:.1f})')
         ax.set_xlabel("Relative Gibbs Free Energy (kcal/mol)")
-        ax.set_ylabel(f"Raw Specific Rotation [α]D ({WAVELENGTH})")
+        ax.set_ylabel(f"Raw SR [α]D (GIAO)")
         ax.grid(True, linestyle=':', alpha=0.6)
         ax.legend(fontsize=9)
         plt.tight_layout()
@@ -159,19 +175,17 @@ if is_ready:
         fig_static.savefig(buf, format="png", dpi=300)
         plot_png_buffer = buf.getvalue()
 
-    # CSV Export (Summary line included)
     summary_row = pd.DataFrame([{"ID": "AVERAGED TOTAL", "Contribution": final_sr}], index=[len(df)])
     csv_buffer = pd.concat([df, summary_row]).to_csv(index=False)
-
 else:
-    st.info("Upload Gaussian logs. Pairing logic: Matches SVP (Energy) and TZVP (SR) files by the last digit in their names.")
+    st.info("Upload Gaussian logs. Priority: Optical Rotation GL (GIAO) with wavelength.")
 
-# --- Download Buttons ---
+# --- Download ---
 st.divider()
 dl1, dl2 = st.columns(2)
 with dl1:
     st.download_button("Download SI-Data (CSV)", data=csv_buffer, 
-                       file_name=f"SR_Boltzmann_Final_{final_sr:.1f}.csv", disabled=not is_ready)
+                       file_name=f"SR_Boltzmann_v2.6_{final_sr:.1f}.csv", disabled=not is_ready)
 with dl2:
-    st.download_button("Download Plot (High-Res PNG)", data=plot_png_buffer, 
+    st.download_button("Download Plot (PNG)", data=plot_png_buffer, 
                        file_name="SR_Boltzmann_Plot.png", mime="image/png", disabled=not is_ready)
